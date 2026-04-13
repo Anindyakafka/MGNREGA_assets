@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.venv/
+.env
+
+# Generated data outputs
+data/raw/assets/*
+!data/raw/assets/.gitkeep
+data/interim/creation_assets/*
+!data/interim/creation_assets/.gitkeep
+data/processed/new_bhuvan_files/*
+!data/processed/new_bhuvan_files/.gitkeep
+
+# Local HTML dumps from detail extraction
+data/raw/assets/**/html_files/
