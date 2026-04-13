@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -25,6 +26,7 @@ from .settings import (
 
 LOGGER = logging.getLogger(__name__)
 CSV_WRITE_LOCK = Lock()
+CHECKPOINT_DIR = CREATION_ASSETS_DIR / "checkpoints"
 
 
 def configure_logging() -> None:
@@ -35,7 +37,7 @@ def configure_logging() -> None:
     )
 
 
-def fetch_data(url: str, data: dict, max_retries: int = 30):
+def fetch_data(url: str, data: dict, max_retries: int = 30, base_delay: float = 1.0, max_delay: float = 20.0):
     for attempt in range(max_retries):
         try:
             response = requests.post(url, data=data, headers=HEADERS, timeout=30)
@@ -44,8 +46,17 @@ def fetch_data(url: str, data: dict, max_retries: int = 30):
         except requests.exceptions.RequestException as exc:
             if attempt == max_retries - 1:
                 raise RuntimeError(f"Failed after {max_retries} attempts for {url}") from exc
-            LOGGER.warning("Retry %s/%s for %s", attempt + 1, max_retries, url)
-            time.sleep(2)
+            backoff = min(max_delay, base_delay * (2 ** attempt))
+            jitter = random.uniform(0.0, 0.3 * backoff)
+            sleep_time = backoff + jitter
+            LOGGER.warning(
+                "Retry %s/%s for %s in %.2fs",
+                attempt + 1,
+                max_retries,
+                url,
+                sleep_time,
+            )
+            time.sleep(sleep_time)
 
 
 def get_districts(state_code: str):
@@ -71,6 +82,40 @@ def get_panchayats(block_code: str):
 
 def get_accepted_geotags(params: dict):
     return fetch_data(BASE_URL + "reports/accepted_geotags.php", params)
+
+
+def _checkpoint_path(state_name: str) -> Path:
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    return CHECKPOINT_DIR / f"{state_name.upper()}_raw_scrape_checkpoint.json"
+
+
+def _load_checkpoint(state_name: str) -> dict:
+    cp_path = _checkpoint_path(state_name)
+    if not cp_path.exists():
+        return {"completed_districts": []}
+    try:
+        return json.loads(cp_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"completed_districts": []}
+
+
+def _save_checkpoint(state_name: str, checkpoint_data: dict) -> None:
+    cp_path = _checkpoint_path(state_name)
+    cp_path.write_text(json.dumps(checkpoint_data, indent=2), encoding="utf-8")
+
+
+def _mark_district_complete(state_name: str, district_name: str) -> None:
+    checkpoint = _load_checkpoint(state_name)
+    completed = set(checkpoint.get("completed_districts", []))
+    completed.add(district_name)
+    checkpoint["completed_districts"] = sorted(completed)
+    _save_checkpoint(state_name, checkpoint)
+
+
+def reset_checkpoint(state_name: str) -> None:
+    cp_path = _checkpoint_path(state_name)
+    if cp_path.exists():
+        cp_path.unlink()
 
 
 def get_start_date(state_name: str, district_name: str, block_name: str, panchayat_name: str) -> str:
@@ -137,13 +182,20 @@ def _process_panchayat(panchayat: dict, block_name: str, district_name: str, sta
     return pd.DataFrame(rows)
 
 
-def process_state_raw(state_code: str, state_name: str, max_workers: int = 40) -> None:
+def process_state_raw(state_code: str, state_name: str, max_workers: int = 40, resume: bool = True) -> None:
     LOGGER.info("Starting raw scrape for %s", state_name)
     districts = get_districts(state_code)
+    completed = set()
+    if resume:
+        completed = set(_load_checkpoint(state_name).get("completed_districts", []))
+        LOGGER.info("Loaded checkpoint for %s with %s completed districts", state_name, len(completed))
 
     for district in districts:
         district_name = district.get("district_name")
         if district_name == "All":
+            continue
+        if resume and district_name in completed:
+            LOGGER.info("Skipping %s due to checkpoint", district_name)
             continue
 
         district_code = district["district_code"]
@@ -179,6 +231,35 @@ def process_state_raw(state_code: str, state_name: str, max_workers: int = 40) -
                         save_district_data(state_name, district_name, df)
                 except Exception as exc:
                     LOGGER.warning("Panchayat worker failed: %s", exc)
+
+        _mark_district_complete(state_name, district_name)
+        LOGGER.info("Completed district %s", district_name)
+
+
+def generate_latest_creation_time_workbooks(state_name: str) -> None:
+    state_dir = RAW_ASSETS_DIR / state_name.upper()
+    if not state_dir.exists():
+        return
+
+    out_dir = CREATION_ASSETS_DIR / state_name.upper()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for raw_file in state_dir.glob("*_bhuvan_lat_lon.csv"):
+        df = pd.read_csv(raw_file)
+        required_cols = {"creation_time", "Panchayat", "Block"}
+        if not required_cols.issubset(df.columns):
+            continue
+
+        if "Panchayat_ID" not in df.columns:
+            df["Panchayat_ID"] = None
+
+        df["creation_time"] = pd.to_datetime(df["creation_time"], errors="coerce", dayfirst=True)
+        agg = df.dropna(subset=["creation_time"]).groupby(["Panchayat_ID", "Panchayat", "Block"], as_index=False)["creation_time"].max()
+        agg["creation_time"] = agg["creation_time"].dt.date
+
+        district = raw_file.name.replace("_bhuvan_lat_lon.csv", "")
+        output_file = out_dir / f"{district.capitalize()}_latest_creation_times.xlsx"
+        agg.to_excel(output_file, index=False)
 
 
 def normalize_raw_columns(state_name: str) -> None:
@@ -243,11 +324,63 @@ def merge_final_outputs(state_name: str, state_code: str) -> None:
         merged.to_csv(output_file, index=False)
 
 
-def run_pipeline(state_dict: dict[str, str], max_workers: int = 40) -> None:
+def run_smoke_test(state_code: str = "05", state_name: str = "BIHAR") -> None:
+    RAW_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    CREATION_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    NEW_BHUVAN_DIR.mkdir(parents=True, exist_ok=True)
+
+    districts = get_districts(state_code)
+    if not districts or not isinstance(districts, list):
+        raise RuntimeError(f"Smoke test failed: no districts returned for {state_name}")
+
+    first_district = next((d for d in districts if d.get("district_name") != "All"), None)
+    if not first_district:
+        raise RuntimeError("Smoke test failed: no usable district found")
+
+    blocks = get_blocks(first_district["district_code"])
+    first_block = next((b for b in blocks if b.get("block_name") != "All"), None)
+    if not first_block:
+        raise RuntimeError("Smoke test failed: no usable block found")
+
+    panchayats = get_panchayats(first_block["block_code"])
+    first_panchayat = next((p for p in panchayats if p.get("panchayat_code") != "All"), None)
+    if not first_panchayat:
+        raise RuntimeError("Smoke test failed: no usable panchayat found")
+
+    payload = {
+        "username": "unauthourized",
+        "stage": 0,
+        "state_code": state_code,
+        "district_code": first_block["block_code"][:4],
+        "block_code": first_block["block_code"],
+        "panchayat_code": first_panchayat["panchayat_code"],
+        "financial_year": DEFAULT_FINANCIAL_YEAR,
+        "accuracy": 0,
+        "category_id": "All",
+        "sub_category_id": "All",
+        "start_date": DEFAULT_START_DATE,
+        "end_date": DEFAULT_END_DATE,
+    }
+    _ = get_accepted_geotags(payload)
+
+    LOGGER.info(
+        "Smoke test passed for %s (%s): district=%s block=%s panchayat=%s",
+        state_name,
+        state_code,
+        first_district["district_name"],
+        first_block["block_name"],
+        first_panchayat["panchayat_name"],
+    )
+
+
+def run_pipeline(state_dict: dict[str, str], max_workers: int = 40, resume: bool = True, reset_cp: bool = False) -> None:
     configure_logging()
     for state_code, state_name in state_dict.items():
-        process_state_raw(state_code, state_name, max_workers=max_workers)
+        if reset_cp:
+            reset_checkpoint(state_name)
+        process_state_raw(state_code, state_name, max_workers=max_workers, resume=resume)
         normalize_raw_columns(state_name)
+        generate_latest_creation_time_workbooks(state_name)
         download_and_process_district_html(state_name, max_workers=max_workers)
         categorize_state_processed_files(state_name)
         merge_final_outputs(state_name, state_code)
@@ -257,6 +390,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MGNREGA Bhuvan asset scraper")
     parser.add_argument("--state_dict", required=True, help="JSON dictionary of state_code to state_name")
     parser.add_argument("--max_workers", type=int, default=40)
+    parser.add_argument("--no_resume", action="store_true", help="Disable resume from district checkpoint")
+    parser.add_argument("--reset_checkpoint", action="store_true", help="Delete existing state checkpoint before run")
+    parser.add_argument("--smoke_test", action="store_true", help="Run smoke test only")
     args = parser.parse_args()
 
-    run_pipeline(json.loads(args.state_dict), max_workers=args.max_workers)
+    parsed_state_dict = json.loads(args.state_dict)
+    if args.smoke_test:
+        first_state_code = next(iter(parsed_state_dict))
+        run_smoke_test(first_state_code, parsed_state_dict[first_state_code])
+    else:
+        run_pipeline(
+            parsed_state_dict,
+            max_workers=args.max_workers,
+            resume=not args.no_resume,
+            reset_cp=args.reset_checkpoint,
+        )

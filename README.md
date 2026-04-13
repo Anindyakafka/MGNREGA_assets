@@ -31,7 +31,34 @@ Or run with CLI:
 python -m mgnrega_assets.pipeline --state_dict '{"05":"BIHAR"}' --max_workers 40
 ```
 
+Run with checkpoint reset:
+
+```bash
+python -m mgnrega_assets.pipeline --state_dict '{"05":"BIHAR"}' --max_workers 40 --reset_checkpoint
+```
+
+Run without resume:
+
+```bash
+python -m mgnrega_assets.pipeline --state_dict '{"05":"BIHAR"}' --max_workers 40 --no_resume
+```
+
+Run smoke test only:
+
+```bash
+python scripts/smoke_test_bihar.py
+```
+
+Or via module flag:
+
+```bash
+python -m mgnrega_assets.pipeline --state_dict '{"05":"BIHAR"}' --smoke_test
+```
+
 ## Notes
 
 - Output directories are intentionally gitignored; only placeholders are tracked.
 - If creation-time Excel files are absent, the scraper falls back to a safe default start date.
+- District-level raw scrape checkpoint is stored in `data/interim/creation_assets/checkpoints/`.
+- Latest creation-time Excel workbooks are auto-generated after raw scrape normalization.
+- Request retries use exponential backoff with jitter for better stability under API throttling.
