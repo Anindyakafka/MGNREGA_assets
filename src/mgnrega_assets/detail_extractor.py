@@ -1,4 +1,6 @@
 import logging
+import random
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -14,10 +16,27 @@ DETAILS_URL = "https://bhuvan-app2.nrsc.gov.in/mgnrega/usrtasks/nrega_phase2/get
 
 
 def _download_html(collection_sno: str, html_path: Path, session: requests.Session) -> None:
-    response = session.get(DETAILS_URL, params={"sno": collection_sno}, timeout=20)
-    response.raise_for_status()
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(response.text, encoding="utf-8")
+    if html_path.exists() and html_path.stat().st_size > 100:
+        return  # already downloaded, skip
+
+    base_delay = 8
+    max_delay = 120
+    for attempt in range(6):
+        try:
+            time.sleep(0.5 + random.uniform(0, 0.5))  # polite per-request throttle
+            response = session.get(DETAILS_URL, params={"sno": collection_sno}, timeout=30)
+            response.raise_for_status()
+            if len(response.content) < 50:
+                raise ValueError(f"Empty/minimal response (rate limited?) for sno {collection_sno}")
+            html_path.parent.mkdir(parents=True, exist_ok=True)
+            html_path.write_text(response.text, encoding="utf-8")
+            return
+        except Exception as exc:
+            if attempt == 5:
+                raise
+            delay = min(max_delay, base_delay * (2 ** attempt)) + random.uniform(0, 5)
+            LOGGER.debug("Retry %d for sno %s after %.1fs: %s", attempt + 1, collection_sno, delay, exc)
+            time.sleep(delay)
 
 
 def _extract_html_details(html_file: Path) -> dict:
@@ -86,6 +105,9 @@ def download_and_process_district_html(state_name: str, max_workers: int = 40) -
     if not state_dir.exists():
         raise FileNotFoundError(f"State directory not found: {state_dir}")
 
+    # HTML endpoint is sensitive to high concurrency — cap at 4 regardless of raw-scrape workers
+    html_workers = min(max_workers, 4)
+
     for district_csv in state_dir.glob("*_bhuvan_lat_lon.csv"):
         district = district_csv.name.replace("_bhuvan_lat_lon.csv", "")
         district_html_dir = state_dir / district / "html_files"
@@ -95,10 +117,17 @@ def download_and_process_district_html(state_name: str, max_workers: int = 40) -
             LOGGER.warning("Skipping %s: collection_sno not found", district_csv.name)
             continue
 
+        snos = df["collection_sno"].dropna().astype(str).unique()
+        missing = [s for s in snos if not (district_html_dir / f"{s}_work_data.html").exists()]
+        if not missing:
+            LOGGER.info("All HTML files already present for %s, skipping download", district)
+        else:
+            LOGGER.info("Downloading %d HTML files for %s (%d already cached)", len(missing), district, len(snos) - len(missing))
+
         with requests.Session() as session:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=html_workers) as executor:
                 futures = []
-                for sno in df["collection_sno"].dropna().astype(str).unique():
+                for sno in snos:
                     html_file = district_html_dir / f"{sno}_work_data.html"
                     futures.append(executor.submit(_download_html, sno, html_file, session))
 
