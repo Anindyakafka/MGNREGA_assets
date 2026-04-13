@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import random
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -84,6 +85,10 @@ def get_accepted_geotags(params: dict):
     return fetch_data(BASE_URL + "reports/accepted_geotags.php", params)
 
 
+def safe_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._ -]", "_", str(value)).strip()
+
+
 def _checkpoint_path(state_name: str) -> Path:
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     return CHECKPOINT_DIR / f"{state_name.upper()}_raw_scrape_checkpoint.json"
@@ -119,7 +124,8 @@ def reset_checkpoint(state_name: str) -> None:
 
 
 def get_start_date(state_name: str, district_name: str, block_name: str, panchayat_name: str) -> str:
-    file_path = CREATION_ASSETS_DIR / state_name.upper() / f"{district_name.capitalize()}_latest_creation_times.xlsx"
+    district_stem = safe_name(district_name)
+    file_path = CREATION_ASSETS_DIR / state_name.upper() / f"{district_stem.capitalize()}_latest_creation_times.xlsx"
     if not file_path.exists():
         return DEFAULT_START_DATE
 
@@ -139,15 +145,24 @@ def save_district_data(state_name: str, district_name: str, data: pd.DataFrame) 
 
     output_dir = RAW_ASSETS_DIR / state_name.upper()
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"{district_name}_bhuvan_lat_lon.csv"
+    district_stem = safe_name(district_name)
+    output_file = output_dir / f"{district_stem}_bhuvan_lat_lon.csv"
 
     with CSV_WRITE_LOCK:
-        if output_file.exists():
-            existing = pd.read_csv(output_file)
-            merged = pd.concat([existing, data], ignore_index=True).drop_duplicates()
-            merged.to_csv(output_file, index=False)
-        else:
-            data.to_csv(output_file, index=False)
+        io_retries = 8
+        for attempt in range(io_retries):
+            try:
+                if output_file.exists():
+                    existing = pd.read_csv(output_file)
+                    merged = pd.concat([existing, data], ignore_index=True).drop_duplicates()
+                    merged.to_csv(output_file, index=False)
+                else:
+                    data.to_csv(output_file, index=False)
+                return
+            except PermissionError:
+                if attempt == io_retries - 1:
+                    raise
+                time.sleep(1.0 + attempt * 0.5)
 
 
 def _process_panchayat(panchayat: dict, block_name: str, district_name: str, state_name: str, state_code: str, block_code: str):
@@ -200,6 +215,8 @@ def process_state_raw(state_code: str, state_name: str, max_workers: int = 40, r
 
         district_code = district["district_code"]
         blocks = get_blocks(district_code)
+        district_chunks = []
+        district_failures = 0
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
@@ -228,12 +245,24 @@ def process_state_raw(state_code: str, state_name: str, max_workers: int = 40, r
                 try:
                     df = future.result()
                     if not df.empty:
-                        save_district_data(state_name, district_name, df)
+                        district_chunks.append(df)
                 except Exception as exc:
+                    district_failures += 1
                     LOGGER.warning("Panchayat worker failed: %s", exc)
 
-        _mark_district_complete(state_name, district_name)
-        LOGGER.info("Completed district %s", district_name)
+        if district_chunks:
+            try:
+                district_df = pd.concat(district_chunks, ignore_index=True).drop_duplicates()
+                save_district_data(state_name, district_name, district_df)
+            except Exception as exc:
+                district_failures += 1
+                LOGGER.warning("Failed to save district %s: %s", district_name, exc)
+
+        if district_failures == 0:
+            _mark_district_complete(state_name, district_name)
+            LOGGER.info("Completed district %s", district_name)
+        else:
+            LOGGER.warning("District %s had %s failures and was not checkpointed", district_name, district_failures)
 
 
 def generate_latest_creation_time_workbooks(state_name: str) -> None:
@@ -300,11 +329,12 @@ def merge_final_outputs(state_name: str, state_code: str) -> None:
     NEW_BHUVAN_DIR.mkdir(parents=True, exist_ok=True)
 
     districts = [d["district_name"] for d in get_districts(state_code) if d.get("district_name") != "All"]
-    columns_to_drop = {"collection_sno", "Category", "Sub-Category", "Work Type Cleaned", "serial_no", "accuracy"}
+    columns_to_drop = {"collection_sno", "Work Type Cleaned", "serial_no", "accuracy"}
 
     for district in districts:
-        work_file = state_raw_dir / f"{district}_work_data.csv"
-        raw_file = state_raw_dir / f"{district}_bhuvan_lat_lon.csv"
+        district_stem = safe_name(district)
+        work_file = state_raw_dir / f"{district_stem}_work_data.csv"
+        raw_file = state_raw_dir / f"{district_stem}_bhuvan_lat_lon.csv"
 
         if not raw_file.exists():
             continue
@@ -316,11 +346,17 @@ def merge_final_outputs(state_name: str, state_code: str) -> None:
         else:
             merged = raw_df
 
+        # Keep original labels and expose clearer aliases for downstream users.
+        if "Category" in merged.columns and "Asset Type" not in merged.columns:
+            merged["Asset Type"] = merged["Category"]
+        if "Sub-Category" in merged.columns and "Asset Sub-Type" not in merged.columns:
+            merged["Asset Sub-Type"] = merged["Sub-Category"]
+
         merged = merged.drop(columns=[c for c in columns_to_drop if c in merged.columns], errors="ignore")
         if "Work Code" in merged.columns:
             merged = merged.drop_duplicates(subset="Work Code", keep="first")
 
-        output_file = NEW_BHUVAN_DIR / f"{district.upper()}.csv"
+        output_file = NEW_BHUVAN_DIR / f"{district_stem.upper()}.csv"
         merged.to_csv(output_file, index=False)
 
 

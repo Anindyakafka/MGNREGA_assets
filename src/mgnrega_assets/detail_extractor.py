@@ -60,7 +60,7 @@ def _extract_html_details(html_file: Path) -> dict:
         elif key == "Work Name":
             data["Work Name"] = val
         elif key == "Work Type":
-            data["Work Type"] = data["Sub-Category"]
+            data["Work Type"] = val
         elif key == "Cumulative Cost of Asset":
             data["Estimated Cost"] = val
         elif key == "Expenditure Unskilled":
@@ -69,6 +69,9 @@ def _extract_html_details(html_file: Path) -> dict:
             data["Material"] = val
         elif key == "Work Start Date":
             data["Work_start_date"] = val
+
+    if not data["Work Type"] and data["Sub-Category"]:
+        data["Work Type"] = data["Sub-Category"]
 
     try:
         data["Total_Expenditure"] = float(data["Unskilled"] or 0) + float(data["Material"] or 0)

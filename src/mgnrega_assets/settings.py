@@ -1,7 +1,8 @@
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = Path(os.getenv("MGNREGA_DATA_DIR", str(PROJECT_ROOT / "data")))
 RAW_ASSETS_DIR = DATA_DIR / "raw" / "assets"
 CREATION_ASSETS_DIR = DATA_DIR / "interim" / "creation_assets"
 PROCESSED_DIR = DATA_DIR / "processed"

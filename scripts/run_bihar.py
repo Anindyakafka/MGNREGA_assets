@@ -10,4 +10,4 @@ from mgnrega_assets.pipeline import run_pipeline
 
 if __name__ == "__main__":
     # Bihar state code: 05
-    run_pipeline({"05": "BIHAR"}, max_workers=40, resume=True, reset_cp=False)
+    run_pipeline({"05": "BIHAR"}, max_workers=12, resume=False, reset_cp=False)
