@@ -15,3 +15,5 @@ data/processed/new_bhuvan_files/*
 
 # Local HTML dumps from detail extraction
 data/raw/assets/**/html_files/
+
+data/downloads/
