@@ -1,74 +1,83 @@
 ﻿# Interactive MGNREGA / Bhuvan downloader
 
-Download accepted asset geotags through a desktop interface or the same underlying command-line engine. Location lists and asset filters come from the current Bhuvan Bhugram dashboard. The supplied `bhuvan_nrega_lat_lon.py` provides the 34 state/UT codes in `src/mgnrega_assets/states.py`.
+A desktop interface and command-line tool for downloading accepted asset geotags across the 34 states/UTs in the bundled Bhuvan catalog. Select any supported state and drill down to district, block, or panchayat. Queue several areas, including areas in different states, for one run.
 
-## Start the desktop app (Windows PowerShell)
+There is no default state. Geographic coverage depends on the records available from Bhuvan; this is not a census of every MGNREGA work.
 
-From this project folder:
+## Setup and launch
+
+Requires Python 3.10+ with Tkinter. On Windows, include Tcl/Tk when installing Python. On Linux, install your distribution's Python Tk package if needed.
+
+From the repository folder in PowerShell:
 
 ```powershell
 python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements-desktop.txt
-.venv/Scripts/python app.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
 ```
 
-The local `.venv` has already been prepared on this machine. Tkinter is included in the standard Windows Python installer; enable its Tcl/Tk option if missing. Other systems may require their Python Tk package.
+After setup, double-click **run_gui.cmd** on Windows. The launcher uses the project's virtual environment when available and reports missing dependencies rather than silently closing.
 
-1. Select a state, then optionally a district, block, and panchayat. `All` downloads every child within the selected parent.
-2. Choose stage, financial year, asset category/subcategory, dates, and accuracy threshold. Dropdowns load in the background. Changing a parent clears child selections.
-3. Enable work details if needed. This makes one extra request per geotag and takes longer. Missing detail fields remain blank.
-4. Choose an output folder. Start downloads for the current selection, or add several selections to the queue and start that queue. A nonempty queue takes precedence over the form. Queued configurations are snapshots; changing the form does not change them.
-5. Use Cancel to stop. Resume reuses completed panchayats for exactly the same filters. Closing during a download requests cancellation; wait for it to stop, then close again.
+With the virtual environment activated, you can also use `mgnrega-assets`, `python -m mgnrega_assets`, or `python app.py`.
 
-Save/Load settings persists one selection as JSON. Copy command first saves that selection, then copies a PowerShell command; run it from the repository folder with the virtual environment activated (or replace `python` with `.venv/Scripts/python`). Loaded codes are validated against live parent lists when downloading. Refresh lists resets the geographic selection below state so you can choose a new area.
+## Desktop workflow
+
+1. Select a state/UT, then optionally a district, block, and panchayat. `All` includes every child within the chosen parent. Location lists load in the background.
+2. Choose stage, financial year, category/subcategory, dates, and accuracy threshold.
+3. Enable optional work details for names, categories, available costs/expenditures, and start dates. Missing fields remain blank. Detail requests make downloads slower.
+4. Choose an output directory. Start the current selection or add multiple selections to the queue. A nonempty queue takes precedence over the form; each queued selection is a snapshot of its settings.
+5. Cancel to stop; completed panchayats can be resumed. Closing during a download requests cancellation. Close again after it stops.
+
+Save/Load settings stores one selection as JSON. Copy command saves the settings and copies a PowerShell command using the current Python executable. Refresh lists clears location choices below the state. Failed queued selections are logged, and remaining selections still run.
 
 ## CLI
 
 ```powershell
-.venv/Scripts/python app.py --help
-.venv/Scripts/python app.py locations state
-.venv/Scripts/python app.py locations district --parent 05
-.venv/Scripts/python app.py locations block --parent 0541
-.venv/Scripts/python app.py locations panchayat --parent 0541006
-.venv/Scripts/python app.py scrape --state 05 --district 0541 --block 0541006 --panchayat 0541006001 --start-date 2024-01-01 --end-date 2024-12-31
-.venv/Scripts/python app.py scrape --config selection.json --details
-.venv/Scripts/python app.py scrape --state 05 --stage 1 --dry-run
+python app.py locations state
+python app.py locations district --parent 32
+python app.py scrape --state 32 --start-date 2024-01-01 --end-date 2024-12-31 --dry-run
+python app.py scrape --config selection.json --details
+python app.py scrape --help
 ```
 
-`--dry-run` validates configuration locally without requests. JSON settings use string codes (e.g. `"05"`); CLI arguments override supplied settings. Supported flags include `--financial-year`, `--category`, `--subcategory`, `--accuracy`, `--output`, `--details` / `--no-details`, and `--resume` / `--no-resume`.
+Use the returned location codes with `--district`, `--block`, and `--panchayat`. Each narrower selection requires its parent. Supply `--state` or a state in a configuration file; the tool never silently chooses a state. JSON codes must be strings to preserve leading zeros.
 
-Stage codes: `0` Phase I assets, `1` Phase II before, `2` Phase II during, `3` Phase II after. Dates default to 2005-07-01 through today's local date. The accuracy filter follows the website's **greater than** semantics; a larger threshold is not a request for better positional accuracy. Financial year and date range are separate server filters; the date is a geotag filter, not a guaranteed work-start-date filter.
+Flags include `--financial-year`, `--stage`, `--category`, `--subcategory`, `--accuracy`, `--start-date`, `--end-date`, `--output`, `--details` / `--no-details`, and `--resume` / `--no-resume`. CLI arguments override JSON settings. `--dry-run` validates locally without making requests.
 
-Exit codes: 0 complete, 2 partial (some requests failed), 1 failed/invalid, 130 cancelled.
+Stage codes: `0` Phase I assets; `1` Phase II before; `2` Phase II during; `3` Phase II after. Dates default to 2005-07-01 through today's local date. Accuracy follows the site's **greater than** filter; increasing it does not request better positional accuracy. Financial year and date range are separate server filters; geotag dates should not be interpreted as work start dates.
 
-## Outputs and resume
+Exit codes: 0 complete, 2 partial, 1 failed or invalid configuration, 130 cancelled.
 
-Each selection has its own folder under `data/downloads/<state>_<filter-hash>/`:
+## Output and reproducibility
 
-- `assets.csv`: UTF-8 CSV with all returned geotag records, geography codes/names, stage, and optional work details. Codes may have leading zeros; import them as text in spreadsheet software.
-- `config.json`: exact run settings.
-- `panchayats/*.json`: atomic per-panchayat data/checkpoints, including successful empty responses.
-- `status.json`: complete, partial, failed, cancelled, or running status, record counts when available, and failures.
-- `run.log`: progress and request failure messages.
+Each selection uses `data/downloads/<state>_<filter-hash>/` by default:
 
-No work-code deduplication is performed. Multiple observations of the same work remain separate. These are accepted geotags, not a census of all MGNREGA works. Output is a combined CSV for the selected area; geographic summaries, XLSX, KML, image downloads, and other dashboard reports are not implemented.
+- `assets.csv`: all returned geotag records, location codes/names, stage, and optional details. Import codes as text in spreadsheets.
+- `config.json`: exact settings.
+- `panchayats/*.json`: atomic per-panchayat data/checkpoints, including valid empty responses.
+- `status.json`: current completion status and failures.
+- `run.log`: download progress and errors.
 
-Requests run sequentially with throttling, bounded retries, timeouts, and cancellation between requests. Cancellation may wait for the current HTTP request to finish. Memory use is bounded by a panchayat response rather than a whole state. Detail failures keep their geotags in the CSV with `detail_status=failed`; resume retries their panchayat. Unknown or invalid response shapes are failures, not empty successes. Actual empty lists are saved as zero-row successes.
+Repeated observations of a work are preserved; there is no work-code deduplication. CSV export is supported. Geographic summaries, XLSX/KML export, image downloads, and other dashboard reports are outside this tool's current scope.
 
-The same exact selection resumes a snapshot; use `--no-resume` to refresh it. Different date ranges, stages, categories, detail modes, or locations have different directories. Failed/cancelled runs retain partition files. A previous `assets.csv` may remain until a new export finishes: always inspect `status.json`. A partial export contains only successfully fetched partitions from the current run. There is no automatic claim of complete coverage.
+Resume reuses the exact selection's snapshot; `--no-resume` refreshes it. Changing geography, filters, dates, stage, or detail mode creates a separate selection directory. Failed detail downloads retain their geotags with `detail_status=failed` and are retried on resume. Invalid server responses are failures rather than empty successes. Empty lists are valid zero-row results.
 
-A `.running` file prevents simultaneous writers to one selection. After a process crash, remove it only after verifying the earlier process has stopped.
+Requests are sequential, throttled, and retried with bounded timeouts. Cancellation can wait for an in-flight request. Memory use is proportional to a panchayat response rather than a whole state. Completed partition files survive failure/cancellation, but a previous `assets.csv` can remain until a new export finishes: check `status.json` before using it. Partial exports include successfully fetched partitions in that run.
 
-The new parser extracts fields it recognizes and leaves unavailable fields blank; it does not fabricate person-days, person counts, or expenditure totals. Raw API field names are preserved. The service can change availability or field definitions.
+The `.running` file prevents concurrent writers to the same selection. Following a crash, remove it only after verifying the previous process has stopped. Downloaded data is ignored by Git and never deleted by installation or repository maintenance.
 
-## Verification
+## Development
 
 ```powershell
-.venv/Scripts/python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
+python -m compileall -q src app.py
 ```
 
-Tests cover configuration validation, filter-specific identity, repeated works, resume, retries, cancellation, parent membership, and missing detail fields. Live validation used a Bihar panchayat and the public category/year endpoints. No nationwide download is part of verification.
+The tests use simulated responses, not bulk live downloads. GUI tests skip when Tk cannot open a display.
 
-## Legacy pipeline
+- `scraper.py`: configuration, API client, extraction, checkpoints, CSV export.
+- `gui.py`: threaded desktop interface.
+- `cli.py`: CLI shared with the GUI engine.
+- `states.py`: supported state/UT catalog.
 
-The older Bihar scripts and `mgnrega_assets.pipeline` remain available, with their original behavior. They use the separate dependencies in `requirements.txt` (including pandas 2.2.3; use a compatible Python such as 3.12). The new app does not use their fixed end date, district checkpoints, placeholder values, or final work-code deduplication. Existing legacy outputs are not automatically imported into the new checkpoint format.
+Runtime dependencies are declared once in `pyproject.toml`; `requirements.txt` installs the project. The source checkout and installed package use the same engine.

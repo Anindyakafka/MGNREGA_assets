@@ -4,19 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mgnrega-assets"
-version = "0.1.0"
-description = "MGNREGA Bhuvan asset scraping pipeline"
+version = "0.2.0"
+description = "Interactive India-wide MGNREGA Bhuvan asset downloader"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "beautifulsoup4==4.12.3",
-  "openpyxl==3.1.5",
-  "pandas==2.2.3",
   "requests==2.32.3",
 ]
+
+[project.scripts]
+mgnrega-assets = "mgnrega_assets.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["E402"]
+"tests/*.py" = ["E402"]

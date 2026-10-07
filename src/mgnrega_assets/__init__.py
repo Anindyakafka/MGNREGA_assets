@@ -1,7 +1,1 @@
-"""MGNREGA asset scraping pipeline package."""
-
-__all__ = [
-    "pipeline",
-    "detail_extractor",
-    "categorization",
-]
+"""Interactive India-wide MGNREGA accepted-geotag downloader."""
